@@ -15,6 +15,8 @@ GOROOT=os.path.join(os.environ.get('GOROOT', os.path.expanduser("~/go")))
 TSBS_GENERATE_DATA=os.path.join(GOROOT, "bin", "tsbs_generate_data")
 TSBS_GENERATE_QUERIES=os.path.join(GOROOT, "bin", "tsbs_generate_queries")
 
+DATA_DIR = os.path.join(os.path.dirname(__file__), "gen-data")
+LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 SYSTEMS=dict(
   kudu=dict(
@@ -74,9 +76,10 @@ COMMON_ARGS=[
 
 @click.group()
 def cli():
-  if not os.path.exists("logs"):
-    os.mkdir("logs")
-  pass
+  if not os.path.exists(LOGS_DIR):
+    os.mkdir(LOGS_DIR)
+  if not os.path.exists(DATA_DIR):
+    os.mkdir(DATA_DIR)
 
 def generate_data(system, out_path):
   if os.path.exists(out_path):
@@ -114,13 +117,13 @@ def load_data(system, input_zst_path):
   cmd += SYSTEMS[system].get('extra_load_flags', [])
   subprocess.check_call(cmd,
       stdin=zstd.stdout,
-      stdout=tee("logs/load-{}.txt".format(system)))
+      stdout=tee(os.path.join(LOGS_DIR, "load-{}.txt".format(system))))
 
 @cli.command()
 @click.argument("system")
 def load(system):
   file_format = SYSTEMS[system]['format']
-  data_path = "data-{}-scale-{}.txt.zst".format(file_format, SCALE)
+  data_path = os.path.join(DATA_DIR, "data-{}-scale-{}.txt.zst".format(file_format, SCALE))
   generate_data(file_format, data_path)
   load_data(system, data_path)
 
