@@ -157,11 +157,14 @@ def run_queries(system, workloads, workers):
     gen_queries = _gen_queries(system, workload, workers * _query_count_multiple(workload))
     runner = os.path.join(GOROOT, "bin",
         "tsbs_run_queries_{}".format(sys['format']))
+    hdr_path = os.path.join(LOGS_DIR,
+        "hdr-{}-{}-{}-workers.txt".format(system, workload, workers))
     subprocess.check_call(
         [runner,
          "--workers={}".format(workers),
          "--urls={}".format(sys.get('query_url', sys.get('url'))),
-         "--print-interval=0"],
+         "--print-interval=0",
+         "--hdr-latencies={}".format(hdr_path)],
         stdin=gen_queries.stdout,
         stderr=subprocess.STDOUT)
     gen_queries.communicate()
