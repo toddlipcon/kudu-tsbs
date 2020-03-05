@@ -13,13 +13,25 @@ TSBS_GENERATE_QUERIES=os.path.join(GOROOT, "bin", "tsbs_generate_queries")
 
 SYSTEMS=dict(
   kudu=dict(
-    extra_load_flags=["--do-create-db=0"],
     format="influx",
     url="http://localhost:4242",
+    extra_load_flags=[
+        "--do-create-db=0",
+        "--gzip=0",
+    ],
   ),
   influx=dict(
     format="influx",
     url="http://localhost:8086",
+    extra_load_flags=[
+        "--gzip=0",
+    ],
+  ),
+  victoriametrics=dict(
+    format="victoriametrics",
+    load_url="http://localhost:8428/write",
+    query_url="http://localhost:8428",
+    unsupported=["high-cpu-*"],
   ),
 )
 
@@ -87,13 +99,13 @@ def tee(path):
   return p.stdin
 
 def load_data(system, input_zst_path):
-  loader = os.path.join(GOROOT, "bin", 'tsbs_load_{}'.format(SYSTEMS[system]['format']))
+  sys = SYSTEMS[system]
+  loader = os.path.join(GOROOT, "bin", 'tsbs_load_{}'.format(sys['format']))
   zstd = subprocess.Popen(["zstdcat", input_zst_path], stdout=subprocess.PIPE)
   cmd=[loader,
-    "--gzip=0",
     "--reporting-period=1s",
     "--workers={}".format(LOAD_WORKERS),
-    "--urls={}".format(SYSTEMS[system]['url'])]
+    "--urls={}".format(sys.get('load_url', sys.get('url')))]
   cmd += SYSTEMS[system].get('extra_load_flags', [])
   subprocess.check_call(cmd,
       stdin=zstd.stdout,
@@ -117,20 +129,24 @@ def _query_count_multiple(workload):
 @click.option("--workers", default=1, type=int)
 @click.argument("system")
 def run_queries(system, workloads, workers):
+  sys = SYSTEMS[system]
   for workload in fnmatch.filter(WORKLOADS, workloads):
     logging.info("=== Running workload %s with %s workers", workload, workers)
+    if any(fnmatch.fnmatch(workload, p) for p in sys.get('unsupported', [])):
+      logging.warn("Not supported!")
+      continue
     gen_queries = subprocess.Popen(
         [TSBS_GENERATE_QUERIES] + COMMON_ARGS +
-        ["--format={}".format(SYSTEMS[system]['format']),
+        ["--format={}".format(sys['format']),
          "--query-type={}".format(workload),
          "--queries={}".format(workers * _query_count_multiple(workload))],
         stdout=subprocess.PIPE)
     runner = os.path.join(GOROOT, "bin",
-        "tsbs_run_queries_{}".format(SYSTEMS[system]['format']))
+        "tsbs_run_queries_{}".format(sys['format']))
     subprocess.check_call(
         [runner,
          "--workers={}".format(workers),
-         "--urls={}".format(SYSTEMS[system]['url']),
+         "--urls={}".format(sys.get('query_url', sys.get('url'))),
          "--print-interval=0"],
         stdin=gen_queries.stdout)
     gen_queries.communicate()
