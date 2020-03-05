@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 
+from pprint import pprint
+from tempfile import NamedTemporaryFile
+import json
 import logging
 import fnmatch
 import click
 import os
 import subprocess
+import signal
+import pdb
 
 GOROOT=os.path.join(os.environ.get('GOROOT', os.path.expanduser("~/go")))
 TSBS_GENERATE_DATA=os.path.join(GOROOT, "bin", "tsbs_generate_data")
@@ -119,10 +124,21 @@ def load(system):
   generate_data(file_format, data_path)
   load_data(system, data_path)
 
+
 def _query_count_multiple(workload):
   if "single-group" in workload or 'cpu-max' in workload:
     return 1000
   return 1
+
+def _gen_queries(system, workload, count):
+  sys = SYSTEMS[system]
+  return subprocess.Popen(
+      [TSBS_GENERATE_QUERIES] + COMMON_ARGS +
+      ["--format={}".format(sys['format']),
+       "--query-type={}".format(workload),
+       "--queries={}".format(count)],
+      stdout=subprocess.PIPE)
+
 
 @cli.command(name="run-queries")
 @click.option("--workloads", default="*")
@@ -135,12 +151,7 @@ def run_queries(system, workloads, workers):
     if any(fnmatch.fnmatch(workload, p) for p in sys.get('unsupported', [])):
       logging.warn("Not supported!")
       continue
-    gen_queries = subprocess.Popen(
-        [TSBS_GENERATE_QUERIES] + COMMON_ARGS +
-        ["--format={}".format(sys['format']),
-         "--query-type={}".format(workload),
-         "--queries={}".format(workers * _query_count_multiple(workload))],
-        stdout=subprocess.PIPE)
+    gen_queries = _gen_queries(system, workload, workers * _query_count_multiple(workload))
     runner = os.path.join(GOROOT, "bin",
         "tsbs_run_queries_{}".format(sys['format']))
     subprocess.check_call(
@@ -148,10 +159,67 @@ def run_queries(system, workloads, workers):
          "--workers={}".format(workers),
          "--urls={}".format(sys.get('query_url', sys.get('url'))),
          "--print-interval=0"],
-        stdin=gen_queries.stdout)
+        stdin=gen_queries.stdout,
+        stderr=subprocess.STDOUT)
     gen_queries.communicate()
     print("\n\n")
 
+@cli.command()
+@click.option("--workloads", default="*")
+def test(workloads):
+  """ Check that influx and kudu have matching results for all workloads """
+  failed = []
+  for workload in fnmatch.filter(WORKLOADS, workloads):
+    logging.info("Testing workload {}".format(workload))
+    responses = {}
+    for system in ['kudu', 'influx']:
+      sys = SYSTEMS[system]
+      gen_queries = _gen_queries(system, workload, 1)
+      runner = os.path.join(GOROOT, "bin", "tsbs_run_queries_influx")
+      output = subprocess.check_output(
+          [runner,
+           "--urls={}".format(sys.get('query_url', sys.get('url'))),
+           "--print-interval=0",
+           "--print-responses"],
+          stdin=gen_queries.stdout,
+          stderr=subprocess.STDOUT)
+      prefix = "ID 0:"
+      # BUG: every line of the response is prefixed with "ID 0" except for the
+      # leading '{' so we have to put that in manually!
+      response = "{" + "\n".join(l[len(prefix):] for l in output.splitlines()
+                           if l.startswith(prefix))
+      response = json.loads(response)
+      # kudu-tsdb column names differ from influx, so just diff the count, not the
+      # names.
+      for r in response['response']['results']:
+        for s in r['series']:
+          s['column_count'] = len(s['columns'])
+          del s['columns']
+      responses[system] = response
+    with NamedTemporaryFile(prefix="influx") as influx_tmp:
+      pprint(responses['influx'], influx_tmp)
+      influx_tmp.flush()
+      with NamedTemporaryFile(prefix="kudu") as kudu_tmp:
+        pprint(responses['kudu'], kudu_tmp)
+        kudu_tmp.flush()
+
+        try:
+          subprocess.check_output(['diff', '-U3', influx_tmp.name, kudu_tmp.name])
+        except subprocess.CalledProcessError as e:
+          print("results differed for workload {}:".format(workload))
+          print("diff:")
+          print(e.output)
+          print("\n\nresponses:")
+          pprint(responses)
+          failed.append(workload)
+  if failed:
+    print("\nFollowing workloads failed:\n" + "\n".join(failed))
+    return 1
+
+def _debug(*args):
+  pdb.set_trace()
+
 if __name__ == "__main__":
   logging.basicConfig(level=logging.INFO)
+  signal.signal(signal.SIGQUIT, _debug)
   cli()
