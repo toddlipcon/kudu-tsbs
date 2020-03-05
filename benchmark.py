@@ -2,14 +2,15 @@
 
 from pprint import pprint
 from tempfile import NamedTemporaryFile
+import click
+import fnmatch
 import json
 import logging
-import fnmatch
-import click
 import os
-import subprocess
-import signal
 import pdb
+import re
+import signal
+import subprocess
 
 GOROOT=os.path.join(os.environ.get('GOROOT', os.path.expanduser("~/go")))
 TSBS_GENERATE_DATA=os.path.join(GOROOT, "bin", "tsbs_generate_data")
@@ -140,8 +141,22 @@ def _gen_queries(system, workload, count):
       ["--format={}".format(sys['format']),
        "--query-type={}".format(workload),
        "--queries={}".format(count)],
-      stdout=subprocess.PIPE)
+      stdout=subprocess.PIPE,
+      stderr=open(os.devnull, "w"))
 
+THROUGHPUT_RE = re.compile(r'Overall query rate ([\d\.]+)')
+STAT_RE = re.compile(r'(\w+):\s+([\d\.]+)ms')
+def _parse_output(output):
+   """ Parse the output of tsbs_run_queries into a more useful k/v dict """
+   # Run complete after 8000 queries with 8 workers (Overall query rate 2595.49 queries/sec):
+   # min:     0.74ms, med:     1.13ms, mean:     1.17ms, max:   12.75ms, stddev:     0.39ms, sum:   9.3sec, count: 8000
+   ret = {}
+   m = THROUGHPUT_RE.search(output)
+   if m:
+     ret['qps'] = float(m.group(1))
+   for m in STAT_RE.finditer(output):
+     ret[m.group(1)] = float(m.group(2))
+   return ret
 
 @cli.command(name="run-queries")
 @click.option("--workloads", default="*")
@@ -150,16 +165,16 @@ def _gen_queries(system, workload, count):
 def run_queries(system, workloads, workers):
   sys = SYSTEMS[system]
   for workload in fnmatch.filter(WORKLOADS, workloads):
-    logging.info("=== Running workload %s with %s workers", workload, workers)
+    print("=== Running workload {} with {} workers".format(workload, workers))
     if any(fnmatch.fnmatch(workload, p) for p in sys.get('unsupported', [])):
-      logging.warn("Not supported!")
+      print("Not supported!")
       continue
     gen_queries = _gen_queries(system, workload, workers * _query_count_multiple(workload))
     runner = os.path.join(GOROOT, "bin",
         "tsbs_run_queries_{}".format(sys['format']))
     hdr_path = os.path.join(LOGS_DIR,
-        "hdr-{}-{}-{}-workers.txt".format(system, workload, workers))
-    subprocess.check_call(
+        "hdr-{}-{}-workers={}.txt".format(system, workload, workers))
+    output = subprocess.check_output(
         [runner,
          "--workers={}".format(workers),
          "--urls={}".format(sys.get('query_url', sys.get('url'))),
@@ -168,7 +183,14 @@ def run_queries(system, workloads, workers):
         stdin=gen_queries.stdout,
         stderr=subprocess.STDOUT)
     gen_queries.communicate()
-    print("\n\n")
+    parsed = _parse_output(output)
+    print(parsed)
+    parsed['system'] = system
+    parsed['workload'] = workload
+    parsed['workers'] = workers
+    json_path = os.path.join(LOGS_DIR, "run-{}-{}-workers={}.json".format(system, workload, workers))
+    with open(json_path, "w") as f:
+      json.dump(parsed, f, indent=2)
 
 @cli.command()
 @click.option("--workloads", default="*")
@@ -176,7 +198,7 @@ def test(workloads):
   """ Check that influx and kudu have matching results for all workloads """
   failed = []
   for workload in fnmatch.filter(WORKLOADS, workloads):
-    logging.info("Testing workload {}".format(workload))
+    print("Testing workload {}".format(workload))
     responses = {}
     for system in ['kudu', 'influx']:
       sys = SYSTEMS[system]
