@@ -19,27 +19,31 @@ TSBS_GENERATE_QUERIES=os.path.join(GOROOT, "bin", "tsbs_generate_queries")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "gen-data")
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
+KUDU_URL="http://localhost:4242"
 SYSTEMS=dict(
   kudu=dict(
     format="influx",
-    url="http://localhost:4242",
-    extra_load_flags=[
+    run_flags=[
+        '--urls={}'.format(KUDU_URL),
+    ],
+    load_flags=[
         "--do-create-db=0",
         "--gzip=0",
+        '--urls={}'.format(KUDU_URL),
     ],
   ),
   influx=dict(
     format="influx",
-    url="http://localhost:8086",
-    extra_load_flags=[
+    load_flags=[
         "--gzip=0",
     ],
   ),
   victoriametrics=dict(
     format="victoriametrics",
-    load_url="http://localhost:8428/write",
-    query_url="http://localhost:8428",
     unsupported=["high-cpu-*"],
+  ),
+  clickhouse=dict(
+    format="clickhouse",
   ),
 )
 
@@ -113,8 +117,7 @@ def load_data(system, input_zst_path):
   zstd = subprocess.Popen(["zstdcat", input_zst_path], stdout=subprocess.PIPE)
   cmd=[loader,
     "--reporting-period=1s",
-    "--workers={}".format(LOAD_WORKERS),
-    "--urls={}".format(sys.get('load_url', sys.get('url')))]
+    "--workers={}".format(LOAD_WORKERS)]
   cmd += SYSTEMS[system].get('extra_load_flags', [])
   subprocess.check_call(cmd,
       stdin=zstd.stdout,
@@ -178,9 +181,9 @@ def run_queries(system, workloads, workers):
         output = subprocess.check_output(
             [runner,
              "--workers={}".format(workers),
-             "--urls={}".format(sys.get('query_url', sys.get('url'))),
              "--print-interval=0",
-             "--hdr-latencies={}".format(hdr_path)],
+             "--hdr-latencies={}".format(hdr_path)] +
+              sys.get('run_flags', []),
             stdin=gen_queries.stdout,
             stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as e:

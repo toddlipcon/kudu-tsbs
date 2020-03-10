@@ -36,10 +36,16 @@ kudu tserver run -fs-wal-dir /data/ts --tablet_history_max_age_sec=5 &
 kudu-tsdb -logtostderr -webserver_max_post_length_bytes=100000000
 ```
 
+*Clickhouse*
+
+Install ClickHouse from APT repos as described on appropriate documentation.
+Run it with the default configuration.
+
+
 == Running benchmarks
 
 Start the appropriate server per above, and then run the following with one of
-`influx`, `kudu`, or `victoriametrics`:
+`influx`, `kudu`, `clickhouse`, or `victoriametrics`:
 
 ```
 # Set the number of concurrent clients as you like. Twice the number of vCPUs
