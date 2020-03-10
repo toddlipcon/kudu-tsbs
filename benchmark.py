@@ -132,7 +132,7 @@ def load(system):
 def _query_count_multiple(workload):
   if "single-group" in workload or 'cpu-max' in workload:
     return 1000
-  return 1
+  return 10
 
 def _gen_queries(system, workload, count):
   sys = SYSTEMS[system]
@@ -155,7 +155,7 @@ def _parse_output(output):
    if m:
      ret['qps'] = float(m.group(1))
    for m in STAT_RE.finditer(output):
-     ret[m.group(1)] = float(m.group(2))
+     ret[m.group(1) + "_latency"] = float(m.group(2))
    return ret
 
 @cli.command(name="run-queries")
@@ -174,14 +174,18 @@ def run_queries(system, workloads, workers):
         "tsbs_run_queries_{}".format(sys['format']))
     hdr_path = os.path.join(LOGS_DIR,
         "hdr-{}-{}-workers={}.txt".format(system, workload, workers))
-    output = subprocess.check_output(
-        [runner,
-         "--workers={}".format(workers),
-         "--urls={}".format(sys.get('query_url', sys.get('url'))),
-         "--print-interval=0",
-         "--hdr-latencies={}".format(hdr_path)],
-        stdin=gen_queries.stdout,
-        stderr=subprocess.STDOUT)
+    try:
+        output = subprocess.check_output(
+            [runner,
+             "--workers={}".format(workers),
+             "--urls={}".format(sys.get('query_url', sys.get('url'))),
+             "--print-interval=0",
+             "--hdr-latencies={}".format(hdr_path)],
+            stdin=gen_queries.stdout,
+            stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        logging.error("run_queries failed:\n%s", e.output)
+        raise
     gen_queries.communicate()
     parsed = _parse_output(output)
     print(parsed)
